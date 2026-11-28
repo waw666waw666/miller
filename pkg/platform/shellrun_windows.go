@@ -36,17 +36,31 @@ import (
 // batching-complexity to overcome its startup-latency overhead.
 
 func GetShellRunArray(command string) []string {
-	if os.Getenv("MSYSTEM") != "" {
-		// Running inside MSYS2; sufficiently Unix-like already.
-		// But mlr.exe is a native Windows program, which can't resolve the
-		// MSYS path "/bin/sh", so look sh up on the PATH instead.
-		if sh, err := exec.LookPath("sh"); err == nil {
-			return []string{sh, "-c", command}
-		}
+	if sh := msysShell(); sh != "" {
+		return []string{sh, "-c", command}
 	}
 	cmd := os.Getenv("COMSPEC")
 	if cmd == "" {
 		cmd = "C:\\Windows\\System32\\cmd.exe"
 	}
 	return []string{cmd, "/c", command}
+}
+
+// ShellIsCmd reports whether GetShellRunArray runs commands through cmd.exe
+// rather than a POSIX sh.
+func ShellIsCmd() bool {
+	return msysShell() == ""
+}
+
+// msysShell returns the path to sh when running inside MSYS2, else "".
+func msysShell() string {
+	if os.Getenv("MSYSTEM") != "" {
+		// Running inside MSYS2; sufficiently Unix-like already.
+		// But mlr.exe is a native Windows program, which can't resolve the
+		// MSYS path "/bin/sh", so look sh up on the PATH instead.
+		if sh, err := exec.LookPath("sh"); err == nil {
+			return sh
+		}
+	}
+	return ""
 }

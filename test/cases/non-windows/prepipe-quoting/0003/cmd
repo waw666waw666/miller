@@ -1,0 +1,1 @@
+mlr --prepipe cat cat 'test/input/prepipe-quoting/a$(true)b.dkvp'

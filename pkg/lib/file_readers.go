@@ -18,7 +18,6 @@
 package lib
 
 import (
-	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
 	"compress/zlib"
@@ -28,6 +27,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/johnkerl/miller/v6/pkg/platform"
 )
 
 type TFileInputEncoding int
@@ -104,47 +105,67 @@ func openPrepipedHandleForRead(
 	prepipe string,
 	prepipeIsRaw bool,
 ) (io.ReadCloser, error) {
-	escapedFilename := escapeFileNameForPopen(filename)
-
-	var command string
 	if filename == "" { // stdin
-		command = prepipe
-	} else {
-		if prepipeIsRaw {
-			command = prepipe + " " + escapedFilename
-		} else {
-			command = prepipe + " < " + escapedFilename
-		}
+		return OpenInboundHalfPipe(prepipe, "")
 	}
 
-	return OpenInboundHalfPipe(command)
+	if !prepipeIsRaw {
+		// --prepipe: Miller opens the file and gives it to the command as its
+		// stdin, so the filename never appears in the shell command line.
+		return OpenInboundHalfPipe(prepipe, filename)
+	}
+
+	// --prepipex: the filename is an argument to the command, so it has to go
+	// into the command line.
+	escapedFilename, err := escapeFileNameForPopen(filename, platform.ShellIsCmd())
+	if err != nil {
+		return nil, err
+	}
+	return OpenInboundHalfPipe(prepipe+" "+escapedFilename, "")
 }
 
-// Avoids shell-injection cases by replacing single-quote with backslash
-// single-quote and double-quote with backslack double-quote, then wrapping the
-// entire result in initial and final single-quote.
-// Also wraps in single quotes in case the filename has whitespace in it
-func escapeFileNameForPopen(filename string) string {
-	var buffer bytes.Buffer
-	foundQuoteOrSpace := false
-	for _, c := range filename {
-		switch c {
-		case '\'', '"':
-			buffer.WriteRune('\'')
-			buffer.WriteRune(c)
-			buffer.WriteRune('\'')
-			foundQuoteOrSpace = true
-		case ' ':
-			buffer.WriteRune(c)
-			foundQuoteOrSpace = true
-		default:
-			buffer.WriteRune(c)
+// cmdSpecialCharacters are characters which cmd.exe can interpret even inside
+// double quotes (% and !, for variable expansion), or which are command
+// separators or redirects outside them. Windows filenames can't contain " | < >,
+// but they can contain the others.
+const cmdSpecialCharacters = "%!&|<>^\""
+
+// escapeFileNameForPopen quotes a filename for interpolation into a shell
+// command line, to avoid shell injection via filenames containing shell
+// metacharacters such as ; | & $ ` ( ) < > or quotes.
+//
+// For a POSIX sh, the filename is always wrapped in single quotes, inside
+// which sh treats every character literally except the single quote itself.
+// Each embedded single quote is written as close-quote, backslash-escaped
+// quote, reopen-quote:
+//
+//	'\''
+//
+// For cmd.exe there is no reliable way to escape every special character
+// (in particular, % expands variables even inside double quotes), so
+// filenames containing any of cmdSpecialCharacters are rejected with an
+// error. Other filenames are wrapped in double quotes, for spaces.
+//
+// A filename starting with '-' is prefixed with "./" (".\" for cmd.exe) so
+// that the command doesn't parse it as an option.
+func escapeFileNameForPopen(filename string, shellIsCmd bool) (string, error) {
+	if shellIsCmd {
+		if strings.ContainsAny(filename, cmdSpecialCharacters) {
+			return "", fmt.Errorf(
+				"filename %q contains one of the characters %s, which can't be passed safely to cmd.exe with --prepipex",
+				filename, cmdSpecialCharacters,
+			)
 		}
+		if strings.HasPrefix(filename, "-") {
+			filename = ".\\" + filename
+		}
+		return "\"" + filename + "\"", nil
 	}
-	if foundQuoteOrSpace {
-		return "'" + buffer.String() + "'"
+
+	if strings.HasPrefix(filename, "-") {
+		filename = "./" + filename
 	}
-	return buffer.String()
+	return "'" + strings.ReplaceAll(filename, "'", `'\''`) + "'", nil
 }
 
 // TODO: comment
